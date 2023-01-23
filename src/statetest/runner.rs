@@ -8,13 +8,12 @@ use std::time::{Duration, Instant};
 
 use arrayref::array_ref;
 use cid::multihash::{Code, MultihashDigest};
-use fil_actor_eam::EthAddress;
-use fil_actor_evm::interpreter::system::{StateKamt, MAX_CODE_SIZE};
-use fil_actor_evm::state::{BytecodeHash, State as EvmState};
+use fil_actor_evm::interpreter::system::StateKamt;
+use fil_actor_evm::{BytecodeHash, State as EvmState};
+use fil_actors_runtime::runtime::builtins::Type as ActorType;
 use fvm::executor::{ApplyKind, Executor};
 use fvm::gas::Gas;
 use fvm::machine::Machine;
-use fvm::state_tree::ActorState;
 use fvm_integration_tests::bundle;
 use fvm_integration_tests::dummy::DummyExterns;
 use fvm_ipld_blockstore::{Block, Blockstore, MemoryBlockstore};
@@ -77,6 +76,7 @@ struct State {
 }
 
 const ENOUGH_GAS: Gas = Gas::new(999_00_000_000_000);
+const MAX_CODE_SIZE: usize = 24 << 10;
 
 lazy_static::lazy_static! {
     // The Solidity compiler creates contiguous array item keys.
@@ -211,7 +211,6 @@ fn skip_post_test(test_name: &str, chain_spec: &SpecName, data_index: usize) -> 
 
 fn execute_test_suit(path: &Path, elapsed: &Arc<Mutex<Duration>>) -> Result<(), TestError> {
     const EAM_ACTOR_ID: ActorID = 10;
-    const EAM_ACTOR_ADDR: Address = Address::new_id(EAM_ACTOR_ID);
 
     let json_reader = std::fs::read(path).unwrap();
     let suit: TestSuit = serde_json::from_reader(&*json_reader)?;
@@ -281,67 +280,42 @@ fn execute_test_suit(path: &Path, elapsed: &Arc<Mutex<Duration>>) -> Result<(), 
                 continue;
             }
 
-            // TODO-Review :: Hit with error ExitCode::USR_UNSPECIFIED
+            let addr = Address::new_delegated(EAM_ACTOR_ID, address.as_bytes()).unwrap();
 
-            // let raw_params = RawBytes::serialize(fil_actor_eam::CreateExternalParams (
-            //     address.as_bytes().to_vec(),
-            // ))
-            // .unwrap();
+            // Deploy a placeholder to the target address.
+            {
+                let message = Message {
+                    from: sender[test_id].1,
+                    to: addr,
+                    gas_limit: ENOUGH_GAS.as_milligas(),
+                    method_num: 0,
+                    params: RawBytes::default(),
+                    ..Message::default()
+                };
 
-            // // Send message
-            // let message = Message {
-            //     from: sender[test_id].1,
-            //     to: EAM_ACTOR_ADDR,
-            //     gas_limit: ENOUGH_GAS.as_milligas(),
-            //     method_num: fil_actor_eam::Method::CreateExternal as u64,
-            //     params: raw_params,
-            //     ..Message::default()
-            // };
+                let create_result = tester
+                    .executor
+                    .as_mut()
+                    .unwrap()
+                    .execute_message(message, ApplyKind::Explicit, 100)
+                    .unwrap();
 
-            let raw_params = RawBytes::serialize(fil_actor_eam::InitAccountParams {
-                eth_address: EthAddress(address.as_bytes().try_into().unwrap()),
-            })
-            .unwrap();
-
-            // Send message
-            let message = Message {
-                from: sender[test_id].1,
-                to: EAM_ACTOR_ADDR,
-                gas_limit: ENOUGH_GAS.as_milligas(),
-                method_num: fil_actor_eam::Method::CreateAccount as u64,
-                params: raw_params,
-                ..Message::default()
-            };
-
-            let create_result = tester
-                .executor
-                .as_mut()
-                .unwrap()
-                .execute_message(message, ApplyKind::Explicit, 100)
+                assert!(
+                    create_result.msg_receipt.exit_code.is_success(),
+                    "failed to create the new actor :: {:#?} | Path :: {:#?} | Address :: {:#?}",
+                    create_result.msg_receipt,
+                    path,
+                    address
+                );
+            }
+            let executor = tester.executor.as_mut().expect("tester not instantiated");
+            let evm_code_cid = *executor
+                .builtin_actors()
+                .code_by_id(ActorType::EVM as u32)
                 .unwrap();
+            let state_tree = executor.state_tree_mut();
 
-            assert!(
-                create_result.msg_receipt.exit_code.is_success(),
-                "failed to create the new actor :: {:#?} | Path :: {:#?} | Address :: {:#?}",
-                create_result.msg_receipt,
-                path,
-                address
-            );
-
-            let create_return: fil_actor_eam::Create2Return = create_result
-                .msg_receipt
-                .return_data
-                .deserialize()
-                .expect("failed to decode results");
-
-            info!(
-                "Dummy Place Holder Contract got deployed with Actor ID [{:#?}]",
-                create_return.actor_id,
-            );
-
-            let new_evm_state_cid = tester.executor.as_ref().map(|maybe_executor| {
-                let maybe_state_tree = maybe_executor.state_tree();
-
+            let evm_state_cid = {
                 let hasher = Code::try_from(SupportedHashes::Keccak256 as u64).unwrap();
                 let code_hash = multihash::Multihash::wrap(
                     SupportedHashes::Keccak256 as u64,
@@ -349,60 +323,34 @@ fn execute_test_suit(path: &Path, elapsed: &Arc<Mutex<Duration>>) -> Result<(), 
                 )
                 .expect("failed to hash bytecode with keccak");
 
-                let code_cid = maybe_state_tree
+                let code_cid = state_tree
                     .store()
                     .put(Code::Blake2b256, &Block::new(IPLD_RAW, info.code.clone()))
                     .expect("failed to write bytecode");
 
-                let mut slots =
-                    StateKamt::new_with_config(maybe_state_tree.store(), KAMT_CONFIG.clone());
+                let mut slots = StateKamt::new_with_config(state_tree.store(), KAMT_CONFIG.clone());
 
-                let mut evm_state = maybe_state_tree
-                    .get_actor(create_return.actor_id)
-                    .map(|actor_state| {
-                        maybe_state_tree
-                            .store()
-                            .get_cbor::<EvmState>(&actor_state.unwrap().state)
-                            .unwrap()
-                            .unwrap()
-                    })
-                    .expect("Invalid evm actor state");
-
-                evm_state.bytecode = code_cid;
-
-                evm_state.bytecode_hash =
-                    BytecodeHash::try_from(&code_hash.to_bytes()[..32]).unwrap();
-
-                evm_state.contract_state = slots.flush().expect("failed to flush contract state");
-
-                evm_state.nonce = info.nonce;
-
-                let evm_state_cid = maybe_state_tree
+                let evm_state = EvmState {
+                    bytecode: code_cid,
+                    bytecode_hash: BytecodeHash::try_from(&code_hash.to_bytes()[..32]).unwrap(),
+                    contract_state: slots.flush().expect("failed to flush contract state"),
+                    nonce: info.nonce,
+                    tombstone: None,
+                };
+                state_tree
                     .store()
                     .put_cbor(&evm_state, Code::Blake2b256)
-                    .unwrap();
+                    .expect("failed to store state")
+            };
 
-                info!("New State ID Updated");
-
-                evm_state_cid
-            });
-
-            if new_evm_state_cid.is_none() {
-                warn!(
-                    "Err => Skipping Pre-Block {:#?} Executor {:#?}",
-                    address,
-                    tester.executor.is_some(),
-                );
-                continue;
-            }
-
-            tester
-                .executor
-                .as_mut()
-                .unwrap()
-                .state_tree_mut()
-                .mutate_actor(create_return.actor_id, |actor_state: &mut ActorState| {
-                    actor_state.state = new_evm_state_cid.unwrap();
+            let actor_id = state_tree
+                .lookup_id(&addr)
+                .expect("failed to lookup actor")
+                .expect("actor does not exist");
+            state_tree
+                .mutate_actor(actor_id, |actor_state| {
+                    actor_state.state = evm_state_cid;
+                    actor_state.code = evm_code_cid;
                     actor_state.sequence = info.nonce;
                     actor_state.balance = TokenAmount::from_atto(
                         BigInt::from_str(&format!("{}", &info.balance)).unwrap(),
@@ -411,7 +359,9 @@ fn execute_test_suit(path: &Path, elapsed: &Arc<Mutex<Duration>>) -> Result<(), 
                 })
                 .expect("EVM actor state mutation failed");
 
-            pre_contract_cache.insert(*address, create_return.actor_id);
+            info!("New State ID Updated");
+
+            pre_contract_cache.insert(*address, actor_id);
         }
 
         let sender_account = unit.transaction.secret_key.map(|trans_sender_key| {
