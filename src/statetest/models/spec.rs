@@ -26,6 +26,7 @@ pub enum SpecName {
     MergeMeterInitCode,
     #[serde(alias = "Merge+3855")]
     MergePush0,
+	Shanghai
 }
 
 // TODO :: Shamb0 => to-discuss with core team

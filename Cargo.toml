@@ -43,10 +43,10 @@ fvm_ipld_encoding = { version = "0.3.2", git = "https://github.com/filecoin-proj
 fvm_shared = { version = "3.0.0-alpha.16", git = "https://github.com/filecoin-project/ref-fvm", features = ["testing"] }
 fvm_integration_tests = { version = "0.1.1-alpha.1", git = "https://github.com/filecoin-project/ref-fvm" }
 
-actors-v10 = { package = "fil_builtin_actors_bundle", git = "https://github.com/filecoin-project/builtin-actors", branch = "next", features = ["m2-native"] }
-fil_actor_evm = { package = "fil_actor_evm", version = "10.0.0-alpha.1", git = "https://github.com/filecoin-project/builtin-actors", branch = "next" }
-fil_actor_eam = { package = "fil_actor_eam", version = "10.0.0-alpha.1", git = "https://github.com/filecoin-project/builtin-actors", branch = "next" }
-fil_actors_runtime = { package = "fil_actors_runtime", version = "10.0.0-alpha.1", git = "https://github.com/filecoin-project/builtin-actors", branch = "next", features = ["test_utils"] }
+actors-v10 = { package = "fil_builtin_actors_bundle", git = "https://github.com/shamb0/filecoin-actor-utils.git", branch = "shamb0/feat/fvm-m2/crates-registry-refactor", features = ["m2-native"] }
+fil_actor_evm = { package = "fil_actor_evm", version = "10.0.0-alpha.1", git = "https://github.com/shamb0/filecoin-actor-utils.git", branch = "shamb0/feat/fvm-m2/crates-registry-refactor" }
+fil_actor_eam = { package = "fil_actor_eam", version = "10.0.0-alpha.1", git = "https://github.com/shamb0/filecoin-actor-utils.git", branch = "shamb0/feat/fvm-m2/crates-registry-refactor" }
+fil_actors_runtime = { package = "fil_actors_runtime", version = "10.0.0-alpha.1", git = "https://github.com/shamb0/filecoin-actor-utils.git", branch = "shamb0/feat/fvm-m2/crates-registry-refactor", features = ["test_utils"] }
 
 
 [dependencies.wasmtime]
@@ -60,7 +60,13 @@ features = ["cranelift", "parallel-compilation"]
 # fil_actor_evm = { path = "../builtin-actors/actors/evm" }
 # fil_actor_eam = { path = "../builtin-actors/actors/eam" }
 
-[patch."https://github.com/filecoin-project/builtin-actors"]
+# [patch."https://github.com/filecoin-project/builtin-actors"]
+# fil_builtin_actors_bundle = { path = "../builtin-actors-v2/builtin-actors" }
+# fil_actors_runtime = { path = "../builtin-actors-v2/builtin-actors/runtime" }
+# fil_actor_evm = { path = "../builtin-actors-v2/builtin-actors/actors/evm" }
+# fil_actor_eam = { path = "../builtin-actors-v2/builtin-actors/actors/eam" }
+
+[patch."https://github.com/shamb0/filecoin-actor-utils.git"]
 fil_builtin_actors_bundle = { path = "../builtin-actors-v2/builtin-actors" }
 fil_actors_runtime = { path = "../builtin-actors-v2/builtin-actors/runtime" }
 fil_actor_evm = { path = "../builtin-actors-v2/builtin-actors/actors/evm" }

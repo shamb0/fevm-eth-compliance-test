@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use arrayref::array_ref;
 use cid::multihash::{Code, MultihashDigest};
 use fil_actor_eam::EthAddress;
-use fil_actor_evm::interpreter::system::{StateKamt, MAX_CODE_SIZE};
+use fil_actor_evm::interpreter::system::{StateKamt};
 use fil_actor_evm::state::{BytecodeHash, State as EvmState};
 use fvm::executor::{ApplyKind, Executor};
 use fvm::gas::Gas;
@@ -259,25 +259,6 @@ fn execute_test_suit(path: &Path, elapsed: &Arc<Mutex<Duration>>) -> Result<(), 
             info!("Pre-Block Iteration :: {:#?}", test_id);
 
             if skip_pre_test(name.as_ref(), address) {
-                continue;
-            }
-
-            if info.code.len() > MAX_CODE_SIZE {
-                warn!(
-                    "Skipping Test {}",
-                    format!(
-						"EVM byte code length ({}) is exceeding the maximum allowed of {MAX_CODE_SIZE}",
-						info.code.len()
-					)
-                );
-                continue;
-            }
-
-            if info.code.first() == Some(&0xEF) {
-                warn!(
-                    "Skipping Test {}",
-                    "EIP-3541: Contract code starting with the 0xEF byte is disallowed.",
-                );
                 continue;
             }
 
