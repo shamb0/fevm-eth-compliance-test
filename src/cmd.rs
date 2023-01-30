@@ -2,12 +2,12 @@ use structopt::clap::AppSettings;
 use structopt::StructOpt;
 use thiserror::Error as ThisError;
 
-use crate::statetest;
+use crate::{common, statetest};
 
 #[derive(Debug, ThisError)]
 pub enum Error {
     #[error("Statetest: {0}")]
-    Statetest(statetest::Error),
+    Statetest(common::Error),
     #[error("Generic system error")]
     SystemError,
 }

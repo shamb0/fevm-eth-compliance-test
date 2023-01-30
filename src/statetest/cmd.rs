@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 use tracing::info;
 
-use super::runner::{run, TestError};
-use crate::common::system_find_all_json_tests;
+use super::runner::run;
+use crate::common::{system_find_all_json_tests, Error};
 
 #[derive(StructOpt, Debug)]
 pub struct Cmd {
@@ -14,7 +14,7 @@ pub struct Cmd {
 }
 
 impl Cmd {
-    pub fn run(&self) -> Result<(), TestError> {
+    pub fn run(&self) -> Result<(), Error> {
         let path =
             var("VECTOR").unwrap_or_else(|_| "test-vectors/tests/GeneralStateTests".to_owned());
         let path = Path::new(path.as_str()).to_path_buf();

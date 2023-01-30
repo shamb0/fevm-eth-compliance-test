@@ -4,7 +4,7 @@ use cid::Cid;
 
 #[derive(thiserror::Error, Debug)]
 /// Util errors for the intergration test framework.
-pub(crate) enum Error {
+pub enum Error {
     #[error("could not find manifest information for cid: {0}")]
     NoManifestInformation(Cid),
     #[error("could not load builtin manifest")]
@@ -15,4 +15,8 @@ pub(crate) enum Error {
     FailedToSetActor(String),
     #[error("failed to flush tree")]
     FailedToFlushTree,
+    #[error("Serde json error")]
+    FailedToDeserialize(#[from] serde_json::Error),
+    #[error("Internal system error")]
+    SystemFailure,
 }

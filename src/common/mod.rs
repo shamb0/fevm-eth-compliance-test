@@ -1,6 +1,6 @@
 mod bits;
 pub mod builtin;
-pub mod error;
+mod error;
 mod skip;
 mod system;
 pub mod tester;
@@ -8,6 +8,7 @@ pub mod tester;
 extern crate alloc;
 
 pub use bits::{B160, B256};
+pub use error::Error;
 pub use ruint::aliases::U256;
 pub use skip::SKIP_TESTS;
 pub use system::system_find_all_json_tests;
