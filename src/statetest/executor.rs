@@ -243,8 +243,7 @@ impl<'a, T: Tester> Executor<'a, T> {
         test: &Test,
     ) -> bool {
         let gas_limit = *unit.transaction.gas_limit.get(test.indexes.gas).unwrap();
-        let gas_limit = u64::try_from(gas_limit).unwrap_or(u64::MAX);
-        let _tx_gas_limit = gas_limit;
+        let tx_gas_limit = i64::try_from(gas_limit).unwrap_or(i64::MAX);
         let tx_data = unit.transaction.data.get(test.indexes.data).unwrap();
         let _tx_value = *unit.transaction.value.get(test.indexes.value).unwrap();
 
@@ -287,16 +286,15 @@ impl<'a, T: Tester> Executor<'a, T> {
             .unwrap()
             .unwrap();
 
-        // ENOUGH_GAS.as_milligas()
-
-        // i64::try_from(tx_gas_limit).unwrap(),
+		// Gas::new(tx_gas_limit).as_milligas(),
+		// Gas::from_milligas(tx_gas_limit).as_milligas()
 
         // Send message
         let message = Message {
             from: sender_account.unwrap().1,
             to: actor_address,
             sequence: sender_state.sequence,
-            gas_limit: ENOUGH_GAS.as_milligas(),
+            gas_limit: tx_gas_limit,
             method_num: fil_actor_evm::Method::InvokeContract as u64,
             params: raw_params,
             ..Message::default()
