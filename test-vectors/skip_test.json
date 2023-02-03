@@ -197,28 +197,6 @@
                     }
                 }
             }
-        },
-		{
-			"issueId": "TID-58-52 | VMTests/vmPerformance/loopMul.json",
-			"failing": "1529 | Execution Freeze",
-			"postTests": {
-				"loopMul": {
-					"skipIds": {
-						"Berlin" : [
-							"*"
-						],
-						"Istanbul" : [
-							"*"
-						],
-						"London" : [
-							"*"
-						],
-						"Merge" : [
-							"*"
-						]
-					}
-				}
-			}
-		}
+        }
     ]
 }
