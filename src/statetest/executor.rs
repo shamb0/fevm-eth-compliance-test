@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::convert::TryFrom;
+//use std::convert::TryFrom;
 use std::path::Path;
 use std::str::FromStr;
 use std::time::{Instant};
@@ -33,6 +33,7 @@ use crate::common::tester::{Account, Tester, TesterCore, INITIAL_ACCOUNT_BALANCE
 use crate::common::{Error, B160, B256, SKIP_TESTS};
 
 const ENOUGH_GAS: Gas = Gas::new(99_900_000_000_000);
+const BLOCK_GAS: u64 = 10_000_000_000u64;
 
 const WAT: &str = r#"
 ;; Mock invoke function
@@ -213,8 +214,8 @@ impl<'a, T: Tester> Executor<'a, T> {
         unit: &TestUnit,
         test: &Test,
     ) -> bool {
-        let gas_limit = *unit.transaction.gas_limit.get(test.indexes.gas).unwrap();
-        let tx_gas_limit = i64::try_from(gas_limit).unwrap_or(i64::MAX);
+        //let gas_limit = *unit.transaction.gas_limit.get(test.indexes.gas).unwrap();
+        //let tx_gas_limit = i64::try_from(gas_limit).unwrap_or(i64::MAX);
         let tx_data = unit.transaction.data.get(test.indexes.data).unwrap();
         let _tx_value = *unit.transaction.value.get(test.indexes.value).unwrap();
 
@@ -265,7 +266,8 @@ impl<'a, T: Tester> Executor<'a, T> {
             from: sender_account.unwrap().1,
             to: actor_address,
             sequence: sender_state.sequence,
-            gas_limit: tx_gas_limit as u64,
+            //gas_limit: tx_gas_limit as u64,
+            gas_limit: BLOCK_GAS,
             method_num: fil_actor_evm::Method::InvokeContract as u64,
             params: raw_params,
             ..Message::default()
