@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use cid::multihash::{Code, MultihashDigest};
 use cid::Cid;
-use fil_actor_evm::interpreter::system::StateKamt;
+use fil_actor_evm::interpreter::system::{StateKamt, KAMT_CONFIG};
 use fil_actor_evm::{BytecodeHash, State as EvmState};
 use fvm::call_manager::DefaultCallManager;
 use fvm::engine::EnginePool;
@@ -15,7 +15,6 @@ use fvm::state_tree::{ActorState, StateTree};
 use fvm::{init_actor, system_actor, DefaultKernel};
 use fvm_ipld_blockstore::{Block, Blockstore};
 use fvm_ipld_encoding::{ser, CborStore};
-use fvm_ipld_kamt::Config as KamtConfig;
 use fvm_shared::address::{Address, Protocol};
 use fvm_shared::crypto::hash::SupportedHashes;
 use fvm_shared::econ::TokenAmount;
@@ -59,7 +58,7 @@ pub trait Tester: 'static {
     fn code_by_id(&self, id: u32) -> Option<Cid>;
     fn get_actor(&mut self, id: ActorID) -> Result<Option<ActorState>>;
     fn set_actor(&mut self, actor_address: &Address, state: ActorState) -> Result<ActorID>;
-    fn init_fevm(&mut self, code: Bytes, nonce: u64, kamt_config: KamtConfig) -> Result<Cid>;
+    fn init_fevm(&mut self, code: Bytes, nonce: u64) -> Result<Cid>;
 }
 
 pub struct TesterCore<B: Blockstore + 'static, E: Externs + 'static> {
@@ -188,8 +187,7 @@ where
         self.state_tree
             .as_mut()
             .unwrap()
-            .set_actor(actor_id, actor_state)
-            .map_err(anyhow::Error::from)?;
+            .set_actor(actor_id, actor_state);
 
         Ok(code_cid)
     }
@@ -284,8 +282,7 @@ where
         };
 
         state_tree
-            .set_actor(assigned_addr, actor_state)
-            .map_err(anyhow::Error::from)?;
+            .set_actor(assigned_addr, actor_state);
         Ok((assigned_addr, pub_key_addr))
     }
 
@@ -316,8 +313,7 @@ where
         };
 
         state_tree
-            .set_actor(assigned_addr, actor_state)
-            .map_err(anyhow::Error::from)?;
+            .set_actor(assigned_addr, actor_state);
 
         Ok((assigned_addr, pub_key_addr))
     }
@@ -381,7 +377,7 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
         Ok(actor_id)
     }
 
-    fn init_fevm(&mut self, code: Bytes, nonce: u64, kamt_config: KamtConfig) -> Result<Cid> {
+    fn init_fevm(&mut self, code: Bytes, nonce: u64) -> Result<Cid> {
         let state_tree = self.executor.as_mut().unwrap().state_tree_mut();
 
         let hasher = Code::try_from(SupportedHashes::Keccak256 as u64).unwrap();
@@ -396,7 +392,7 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
             .put(Code::Blake2b256, &Block::new(IPLD_RAW, code))
             .expect("failed to write bytecode");
 
-        let mut slots = StateKamt::new_with_config(state_tree.store(), kamt_config);
+        let mut slots = StateKamt::new_with_config(state_tree.store(), KAMT_CONFIG);
 
         let evm_state = EvmState {
             bytecode: code_cid,

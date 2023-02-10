@@ -14,7 +14,6 @@ use fvm_integration_tests::dummy::DummyExterns;
 use fvm_ipld_blockstore::MemoryBlockstore;
 use fvm_ipld_encoding::tuple::*;
 use fvm_ipld_encoding::{strict_bytes, BytesDe, RawBytes};
-use fvm_ipld_kamt::Config as KamtConfig;
 use fvm_shared::address::Address;
 use fvm_shared::bigint::BigInt;
 use fvm_shared::econ::TokenAmount;
@@ -43,34 +42,6 @@ const WAT: &str = r#"
   )
 )
 "#;
-
-lazy_static::lazy_static! {
-    // The Solidity compiler creates contiguous array item keys.
-    // To prevent the tree from going very deep we use extensions,
-    // which the Kamt supports and does in all cases.
-    //
-    // There are maximum 32 levels in the tree with the default bit width of 8.
-    // The top few levels will have a higher level of overlap in their hashes.
-    // Intuitively these levels should be used for routing, not storing data.
-    //
-    // The only exception to this is the top level variables in the contract
-    // which solidity puts in the first few slots. There having to do extra
-    // lookups is burdensome, and they will always be accessed even for arrays
-    // because that's where the array length is stored.
-    //
-    // However, for Solidity, the size of the KV pairs is 2x256, which is
-    // comparable to a size of a CID pointer plus extension metadata.
-    // We can keep the root small either by force-pushing data down,
-    // or by not allowing many KV pairs in a slot.
-    //
-    // The following values have been set by looking at how the charts evolved
-    // with the test contract. They might not be the best for other contracts.
-    static ref KAMT_CONFIG: KamtConfig = KamtConfig {
-        min_data_depth: 0,
-        bit_width: 5,
-        max_array_width: 1
-    };
-}
 
 #[derive(Serialize_tuple, Deserialize_tuple, Clone, Debug)]
 struct State {
@@ -294,7 +265,7 @@ impl<'a, T: Tester> Executor<'a, T> {
             from: sender_account.unwrap().1,
             to: actor_address,
             sequence: sender_state.sequence,
-            gas_limit: tx_gas_limit,
+            gas_limit: tx_gas_limit as u64,
             method_num: fil_actor_evm::Method::InvokeContract as u64,
             params: raw_params,
             ..Message::default()
@@ -405,7 +376,7 @@ impl<'a, T: Tester> Executor<'a, T> {
                 let evm_code_cid = self.tester.code_by_id(ActorType::EVM as u32).unwrap();
                 let evm_state_cid = self
                     .tester
-                    .init_fevm(info.code.clone(), info.nonce, KAMT_CONFIG.clone())
+                    .init_fevm(info.code.clone(), info.nonce)
                     .expect("failed to store state");
 
                 let actor_state = ActorState::new(
