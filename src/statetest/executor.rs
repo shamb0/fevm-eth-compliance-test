@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::Path;
 use std::str::FromStr;
-use std::time::{Instant};
+use std::time::Instant;
 
 use arrayref::array_ref;
 use fil_actors_runtime::runtime::builtins::Type as ActorType;
@@ -31,7 +31,7 @@ use tracing::{info, warn};
 use super::models::{SpecName, Test, TestSuit, TestUnit};
 use super::{ExecStatus, Runner};
 use crate::common::tester::{Account, Tester, TesterCore, INITIAL_ACCOUNT_BALANCE};
-use crate::common::{Error, B160, B256, SKIP_TESTS};
+use crate::common::{merkle_trie, Error, B160, B256, H160, SKIP_TESTS};
 
 const ENOUGH_GAS: Gas = Gas::new(99_900_000_000_000);
 
@@ -243,7 +243,7 @@ impl<'a, T: Tester> Executor<'a, T> {
         test: &Test,
     ) -> bool {
         let gas_limit = *unit.transaction.gas_limit.get(test.indexes.gas).unwrap();
-        let tx_gas_limit = i64::try_from(gas_limit).unwrap_or(i64::MAX);
+        let tx_gas_limit = u64::try_from(gas_limit).unwrap_or(u64::MAX);
         let tx_data = unit.transaction.data.get(test.indexes.data).unwrap();
         let _tx_value = *unit.transaction.value.get(test.indexes.value).unwrap();
 
@@ -261,6 +261,15 @@ impl<'a, T: Tester> Executor<'a, T> {
             );
             warn!("Path : {:#?}", self.trace_prefix);
             warn!("TX len : {:#?}", tx_data.len());
+
+            let path_tag: String = format!("{}::{}", self.trace_prefix, name);
+            let status_msg: String = format!(
+                "{:?} | {:?} | transaction.to empty",
+                spec_name, test.indexes.data
+            );
+
+            runner.update_exe_status(ExecStatus::Skip, path_tag, status_msg);
+
             return false;
         }
 
@@ -286,15 +295,17 @@ impl<'a, T: Tester> Executor<'a, T> {
             .unwrap()
             .unwrap();
 
-		// Gas::new(tx_gas_limit).as_milligas(),
-		// Gas::from_milligas(tx_gas_limit).as_milligas()
+        // Gas::new(tx_gas_limit).as_milligas(),
+        // Gas::from_milligas(tx_gas_limit).as_milligas()
+        // (tx_gas_limit.saturating_mul(20i64))
+        // ENOUGH_GAS.as_milligas()
 
         // Send message
         let message = Message {
             from: sender_account.unwrap().1,
             to: actor_address,
             sequence: sender_state.sequence,
-            gas_limit: tx_gas_limit,
+            gas_limit: tx_gas_limit.saturating_mul(20u64),
             method_num: fil_actor_evm::Method::InvokeContract as u64,
             params: raw_params,
             ..Message::default()
@@ -305,7 +316,12 @@ impl<'a, T: Tester> Executor<'a, T> {
             .execute_message(message, ApplyKind::Explicit, 100)
             .unwrap();
 
-        info!("UC : {:#?}", name);
+		info!("Post Hash Check ::");
+
+		let state_trie_hash = self.state_merkle_trie_root();
+
+		info!("Calc :: {:#?}", state_trie_hash);
+        info!("Actual :: {:#?}", test.hash);
 
         let path_tag: String = format!("{}::{}", self.trace_prefix, name);
         let status_msg: String = format!(
@@ -334,6 +350,26 @@ impl<'a, T: Tester> Executor<'a, T> {
         }
 
         true
+    }
+
+    fn state_merkle_trie_root(&mut self) -> B256 {
+        let vec = self
+            .pre_contract_cache
+            .iter()
+            .map(|(address, actor_id)| {
+
+				info!("State info for => {:#?}", hex::encode(&address.to_fixed_bytes()));
+
+				let acc_root = self
+                    .tester
+                    .get_fevm_trie_account_rlp(*actor_id, KAMT_CONFIG.clone())
+                    .unwrap();
+
+                (H160::from_slice(&address.to_fixed_bytes()), acc_root)
+            })
+            .collect();
+
+        merkle_trie::trie_root(vec)
     }
 
     fn skip_pre_test(test_name: &str, owner_address: &B160) -> bool {

@@ -1,5 +1,7 @@
 // Copyright 2021-2023 Protocol Labs
 // SPDX-License-Identifier: Apache-2.0, MIT
+use std::str::FromStr;
+
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use cid::multihash::{Code, MultihashDigest};
@@ -25,11 +27,12 @@ use fvm_shared::version::NetworkVersion;
 use fvm_shared::{ActorID, IPLD_RAW};
 use lazy_static::lazy_static;
 use libsecp256k1::{PublicKey, SecretKey};
+use rlp::RlpStream;
+use tracing::info;
 
-use crate::common::builtin::{
-    fetch_builtin_code_cid, set_eam_actor, set_init_actor, set_sys_actor,
-};
-use crate::common::error::Error;
+use super::builtin::{fetch_builtin_code_cid, set_eam_actor, set_init_actor, set_sys_actor};
+use super::error::Error;
+use super::{merkle_trie, H256, B256};
 
 const DEFAULT_BASE_FEE: u64 = 100;
 
@@ -60,6 +63,7 @@ pub trait Tester: 'static {
     fn get_actor(&mut self, id: ActorID) -> Result<Option<ActorState>>;
     fn set_actor(&mut self, actor_address: &Address, state: ActorState) -> Result<ActorID>;
     fn init_fevm(&mut self, code: Bytes, nonce: u64, kamt_config: KamtConfig) -> Result<Cid>;
+    fn get_fevm_trie_account_rlp(&mut self, id: ActorID, kamt_config: KamtConfig) -> Result<Bytes>;
 }
 
 pub struct TesterCore<B: Blockstore + 'static, E: Externs + 'static> {
@@ -188,8 +192,7 @@ where
         self.state_tree
             .as_mut()
             .unwrap()
-            .set_actor(actor_id, actor_state)
-            .map_err(anyhow::Error::from)?;
+            .set_actor(actor_id, actor_state);
 
         Ok(code_cid)
     }
@@ -283,9 +286,8 @@ where
             delegated_address: None,
         };
 
-        state_tree
-            .set_actor(assigned_addr, actor_state)
-            .map_err(anyhow::Error::from)?;
+        state_tree.set_actor(assigned_addr, actor_state);
+
         Ok((assigned_addr, pub_key_addr))
     }
 
@@ -315,9 +317,7 @@ where
             delegated_address: None,
         };
 
-        state_tree
-            .set_actor(assigned_addr, actor_state)
-            .map_err(anyhow::Error::from)?;
+        state_tree.set_actor(assigned_addr, actor_state);
 
         Ok((assigned_addr, pub_key_addr))
     }
@@ -407,6 +407,60 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
         };
 
         state_tree.store().put_cbor(&evm_state, Code::Blake2b256)
+    }
+
+    fn get_fevm_trie_account_rlp(&mut self, id: ActorID, kamt_config: KamtConfig) -> Result<Bytes> {
+        let state_tree = self.executor.as_mut().unwrap().state_tree_mut();
+
+        let actor_state = state_tree
+            .get_actor(id)
+            .unwrap()
+            .expect("failed to get actor state");
+
+        let evm_state: EvmState = state_tree
+            .store()
+            .get_cbor(&actor_state.state)
+            .unwrap()
+            .unwrap();
+
+        let slots =
+            StateKamt::load_with_config(&evm_state.contract_state, state_tree.store(), kamt_config)
+                .expect("state not in blockstore");
+
+        let mut stream = RlpStream::new_list(4);
+
+        stream.append(&evm_state.nonce);
+		info!("nonce :: {:#?}", &evm_state.nonce);
+
+        let balance = format!("{}", &actor_state.balance.atto());
+        let balance = primitive_types::U256::from_str(&balance).unwrap();
+        stream.append(&balance);
+		info!("balance :: {:#?}", &balance);
+
+        let mut slots_entry = vec![];
+
+        slots
+            .for_each(|&k, v| {
+                let val = primitive_types::U256::from_str(&format!("{}", &v)).unwrap();
+
+                if !val.is_zero() {
+                    slots_entry.push((H256::from_slice(&k.to_bytes()), rlp::encode(&val)));
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        stream.append(&{
+            merkle_trie::sec_trie_root::<merkle_trie::KeccakHasher, _, _, _>(slots_entry.clone())
+        });
+		info!("slots :: {:#?}", &slots_entry);
+
+		let bytecode_hash = B256::from_slice(evm_state.bytecode_hash.as_slice());
+
+        stream.append(&bytecode_hash.0.as_ref());
+		info!("bytecode_hash.0 :: {}", hex::encode(&bytecode_hash.0.as_ref()));
+
+        Ok(stream.out().freeze())
     }
 }
 

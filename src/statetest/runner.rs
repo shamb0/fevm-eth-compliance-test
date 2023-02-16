@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration};
+use std::time::Duration;
 
 use indicatif::ProgressBar;
 use tracing::{error, info, trace};
@@ -83,7 +83,7 @@ impl Runner for RunnerCore {
 
     fn print_summary(&self) {
         if let Ok(runner_stats) = self.exe_status.lock() {
-			println!("=== Start ===");
+            println!("=== Start ===");
             println!("=== OK Status ===");
             if runner_stats.ok_list.is_empty() {
                 println!("None");
@@ -107,7 +107,7 @@ impl Runner for RunnerCore {
                 println!("Count :: {:#?}", runner_stats.skip_list.len());
                 println!("{:#?}", &runner_stats.skip_list);
             }
-			println!("=== End ===");
+            println!("=== End ===");
         }
     }
 }
