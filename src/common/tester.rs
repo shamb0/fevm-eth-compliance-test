@@ -32,7 +32,7 @@ use tracing::info;
 
 use super::builtin::{fetch_builtin_code_cid, set_eam_actor, set_init_actor, set_sys_actor};
 use super::error::Error;
-use super::{merkle_trie, H256, B256};
+use super::{merkle_trie, B256, H256};
 
 const DEFAULT_BASE_FEE: u64 = 100;
 
@@ -385,11 +385,8 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
         let state_tree = self.executor.as_mut().unwrap().state_tree_mut();
 
         let hasher = Code::try_from(SupportedHashes::Keccak256 as u64).unwrap();
-        let code_hash = multihash::Multihash::wrap(
-            SupportedHashes::Keccak256 as u64,
-            &hasher.digest(&code).to_bytes(),
-        )
-        .expect("failed to hash bytecode with keccak");
+        let mhash = hasher.digest(&code);
+        let digest = mhash.digest();
 
         let code_cid = state_tree
             .store()
@@ -400,7 +397,7 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
 
         let evm_state = EvmState {
             bytecode: code_cid,
-            bytecode_hash: BytecodeHash::try_from(&code_hash.to_bytes()[..32]).unwrap(),
+            bytecode_hash: BytecodeHash::try_from(digest).unwrap(),
             contract_state: slots.flush().expect("failed to flush contract state"),
             nonce,
             tombstone: None,
@@ -430,12 +427,12 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
         let mut stream = RlpStream::new_list(4);
 
         stream.append(&evm_state.nonce);
-		info!("nonce :: {:#?}", &evm_state.nonce);
+        info!("nonce :: {:#?}", &evm_state.nonce);
 
         let balance = format!("{}", &actor_state.balance.atto());
         let balance = primitive_types::U256::from_str(&balance).unwrap();
         stream.append(&balance);
-		info!("balance :: {:#?}", &balance);
+        info!("balance :: {:#?}", &balance);
 
         let mut slots_entry = vec![];
 
@@ -453,12 +450,15 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
         stream.append(&{
             merkle_trie::sec_trie_root::<merkle_trie::KeccakHasher, _, _, _>(slots_entry.clone())
         });
-		info!("slots :: {:#?}", &slots_entry);
+        info!("slots :: {:#?}", &slots_entry);
 
-		let bytecode_hash = B256::from_slice(evm_state.bytecode_hash.as_slice());
+        let bytecode_hash = B256::from_slice(evm_state.bytecode_hash.as_slice());
 
         stream.append(&bytecode_hash.0.as_ref());
-		info!("bytecode_hash.0 :: {}", hex::encode(&bytecode_hash.0.as_ref()));
+        info!(
+            "bytecode_hash.0 :: {}",
+            hex::encode(&bytecode_hash.0.as_ref())
+        );
 
         Ok(stream.out().freeze())
     }
