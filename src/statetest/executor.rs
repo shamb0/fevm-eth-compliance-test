@@ -164,8 +164,6 @@ impl<'a, T: Tester> Executor<'a, T> {
                 return false;
             };
 
-        let sender_actor_id = *self.pre_contract_cache.get(&sender).unwrap();
-
         // Process the "Post" & "transaction" block
         unit.post.iter().for_each(|(spec_name, tests)| {
             tests.iter().for_each(|test| {
@@ -186,7 +184,7 @@ impl<'a, T: Tester> Executor<'a, T> {
 
                 let _execu_status = self.process_post_block_internal(
                     runner.clone(),
-                    sender_actor_id,
+                    sender,
                     name,
                     spec_name,
                     unit,
@@ -234,7 +232,7 @@ impl<'a, T: Tester> Executor<'a, T> {
     fn process_post_block_internal<RUN: Runner + Clone>(
         &mut self,
         runner: RUN,
-        sender_id: ActorID,
+        sender: B160,
         name: &str,
         spec_name: &SpecName,
         unit: &TestUnit,
@@ -287,11 +285,13 @@ impl<'a, T: Tester> Executor<'a, T> {
 
         let actor_address = Address::new_id(*actor_id);
 
-        let sender_addr = Address::new_id(sender_id);
+		let sender_actor_id = *self.pre_contract_cache.get(&sender).unwrap();
 
-        let sender_address = Address::new_delegated(EAM_ACTOR_ID, &sender_addr.to_bytes()).unwrap();
+        let sender_address = Address::new_delegated(EAM_ACTOR_ID, &sender.to_fixed_bytes()).unwrap();
 
-        let sender_state = self.tester.get_actor(sender_id).unwrap().unwrap();
+        let sender_state = self.tester.get_actor(sender_actor_id).unwrap().unwrap();
+
+		info!("Sender :: {:#?} {:#?}", &sender, &sender_address);
 
         // Gas::new(tx_gas_limit).as_milligas(),
         // Gas::from_milligas(tx_gas_limit).as_milligas()
