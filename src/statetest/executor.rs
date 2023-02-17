@@ -283,15 +283,16 @@ impl<'a, T: Tester> Executor<'a, T> {
             .get(&unit.transaction.to.unwrap())
             .unwrap();
 
-        let actor_address = Address::new_id(*actor_id);
+        let to_actor_address = Address::new_id(*actor_id);
 
-		let sender_actor_id = *self.pre_contract_cache.get(&sender).unwrap();
+        let sender_actor_id = *self.pre_contract_cache.get(&sender).unwrap();
 
-        let sender_address = Address::new_delegated(EAM_ACTOR_ID, &sender.to_fixed_bytes()).unwrap();
+        let sender_address =
+            Address::new_delegated(EAM_ACTOR_ID, &sender.to_fixed_bytes()).unwrap();
 
         let sender_state = self.tester.get_actor(sender_actor_id).unwrap().unwrap();
 
-		info!("Sender :: {:#?} {:#?}", &sender, &sender_address);
+        info!("Sender :: {:#?} {:#?}", &sender, &sender_address);
 
         // Gas::new(tx_gas_limit).as_milligas(),
         // Gas::from_milligas(tx_gas_limit).as_milligas()
@@ -301,7 +302,7 @@ impl<'a, T: Tester> Executor<'a, T> {
         // Send message
         let message = Message {
             from: sender_address,
-            to: actor_address,
+            to: to_actor_address,
             sequence: sender_state.sequence,
             gas_limit: tx_gas_limit.saturating_mul(20u64),
             method_num: fil_actor_evm::Method::InvokeContract as u64,
