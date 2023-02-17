@@ -1,6 +1,6 @@
 // Copyright 2021-2023 Protocol Labs
 // SPDX-License-Identifier: Apache-2.0, MIT
-use std::str::FromStr;
+use std::collections::HashMap;
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
@@ -8,6 +8,7 @@ use cid::multihash::{Code, MultihashDigest};
 use cid::Cid;
 use fil_actor_evm::interpreter::system::StateKamt;
 use fil_actor_evm::{BytecodeHash, State as EvmState};
+use fil_actors_evm_shared::uints::U256 as evm_U256;
 use fvm::call_manager::DefaultCallManager;
 use fvm::engine::EnginePool;
 use fvm::executor::{ApplyKind, ApplyRet, DefaultExecutor, Executor as FVMExecutor};
@@ -32,7 +33,7 @@ use tracing::info;
 
 use super::builtin::{fetch_builtin_code_cid, set_eam_actor, set_init_actor, set_sys_actor};
 use super::error::Error;
-use super::{merkle_trie, B256, H256};
+use super::{merkle_trie, B256, H256, U256};
 
 const DEFAULT_BASE_FEE: u64 = 100;
 
@@ -62,7 +63,13 @@ pub trait Tester: 'static {
     fn code_by_id(&self, id: u32) -> Option<Cid>;
     fn get_actor(&mut self, id: ActorID) -> Result<Option<ActorState>>;
     fn set_actor(&mut self, actor_address: &Address, state: ActorState) -> Result<ActorID>;
-    fn init_fevm(&mut self, code: Bytes, nonce: u64, kamt_config: KamtConfig) -> Result<Cid>;
+    fn init_fevm(
+        &mut self,
+        code: Bytes,
+        nonce: u64,
+        storage: &HashMap<U256, U256>,
+        kamt_config: KamtConfig,
+    ) -> Result<Cid>;
     fn get_fevm_trie_account_rlp(&mut self, id: ActorID, kamt_config: KamtConfig) -> Result<Bytes>;
 }
 
@@ -381,7 +388,13 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
         Ok(actor_id)
     }
 
-    fn init_fevm(&mut self, code: Bytes, nonce: u64, kamt_config: KamtConfig) -> Result<Cid> {
+    fn init_fevm(
+        &mut self,
+        code: Bytes,
+        nonce: u64,
+        storage: &HashMap<U256, U256>,
+        kamt_config: KamtConfig,
+    ) -> Result<Cid> {
         let state_tree = self.executor.as_mut().unwrap().state_tree_mut();
 
         let hasher = Code::try_from(SupportedHashes::Keccak256 as u64).unwrap();
@@ -394,6 +407,19 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
             .expect("failed to write bytecode");
 
         let mut slots = StateKamt::new_with_config(state_tree.store(), kamt_config);
+
+        if !storage.is_empty() {
+            storage.iter().for_each(|(k, v)| {
+                if *v != U256::ZERO {
+                    let _ = slots
+                        .set(
+                            evm_U256::from_dec_str(&format!("{}", *k)).unwrap(),
+                            evm_U256::from_dec_str(&format!("{}", *v)).unwrap(),
+                        )
+                        .unwrap();
+                }
+            });
+        }
 
         let evm_state = EvmState {
             bytecode: code_cid,
@@ -430,7 +456,7 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
         info!("nonce :: {:#?}", &evm_state.nonce);
 
         let balance = format!("{}", &actor_state.balance.atto());
-        let balance = primitive_types::U256::from_str(&balance).unwrap();
+        let balance = primitive_types::U256::from_dec_str(&balance).unwrap();
         stream.append(&balance);
         info!("balance :: {:#?}", &balance);
 
@@ -438,7 +464,7 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
 
         slots
             .for_each(|&k, v| {
-                let val = primitive_types::U256::from_str(&format!("{}", &v)).unwrap();
+                let val = primitive_types::U256::from_dec_str(&format!("{}", &v)).unwrap();
 
                 if !val.is_zero() {
                     slots_entry.push((H256::from_slice(&k.to_bytes()), rlp::encode(&val)));
@@ -457,7 +483,7 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
         stream.append(&bytecode_hash.0.as_ref());
         info!(
             "bytecode_hash.0 :: {}",
-            hex::encode(&bytecode_hash.0.as_ref())
+            hex::encode(bytecode_hash.0.as_ref())
         );
 
         Ok(stream.out().freeze())

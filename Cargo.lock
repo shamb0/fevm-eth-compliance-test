@@ -1124,6 +1124,7 @@ dependencies = [
  "derive_more",
  "fil_actor_eam",
  "fil_actor_evm",
+ "fil_actors_evm_shared",
  "fil_actors_runtime",
  "fil_builtin_actors_bundle",
  "fixed-hash",
