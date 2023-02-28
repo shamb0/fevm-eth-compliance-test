@@ -26,7 +26,7 @@ use num_traits::Zero;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use super::models::{SpecName, Test, TestSuit, TestUnit};
+use super::models::{Env, SpecName, Test, TestSuit, TestUnit};
 use super::{ExecStatus, Runner};
 use crate::common::tester::{Account, Tester, TesterCore};
 use crate::common::{merkle_trie, Error, B160, B256, H160, SKIP_TESTS};
@@ -126,15 +126,18 @@ lazy_static::lazy_static! {
 
 const EAM_ACTOR_ID: ActorID = 10;
 
-struct Executor<'a, T: Tester> {
+struct Executor<TC> {
     trace_prefix: String,
     pre_contract_cache: HashMap<B160, ActorID>,
-    tester: &'a mut T,
+    tester: TC,
     sender: Vec<Account>,
 }
 
-impl<'a, T: Tester> Executor<'a, T> {
-    fn new(path: &Path, tester: &'a mut T, arg_sender: &[Account]) -> Self {
+impl<TC> Executor<TC>
+where
+    TC: Tester,
+{
+    fn new(path: &Path, tester: TC, arg_sender: &[Account]) -> Self {
         let pre_contract_cache: HashMap<B160, ActorID> = HashMap::new();
 
         let sender = arg_sender.to_vec();
@@ -287,8 +290,9 @@ impl<'a, T: Tester> Executor<'a, T> {
 
         let sender_actor_id = *self.pre_contract_cache.get(&sender).unwrap();
 
-        let sender_address =
-            Address::new_delegated(EAM_ACTOR_ID, &sender.to_fixed_bytes()).unwrap();
+        // let sender_address = Address::new_delegated(EAM_ACTOR_ID, &sender.as_bytes()).unwrap();
+
+        let sender_address = Address::new_id(sender_actor_id);
 
         let sender_state = self.tester.get_actor(sender_actor_id).unwrap().unwrap();
 
@@ -456,13 +460,29 @@ impl<'a, T: Tester> Executor<'a, T> {
                         BigInt::from_str(&format!("{}", &info.balance)).unwrap(),
                     ),
                     info.nonce,
-                    None,
+                    Some(addr),
                 );
 
                 let actor_id = self
                     .tester
                     .set_actor(&addr, actor_state)
                     .expect("EVM actor state mutation failed");
+
+                info!("Pre Acc {:#?}", *address);
+                info!(
+                    "Balance :: {:#?}",
+                    self.tester
+                        .get_actor(actor_id.clone())
+                        .unwrap()
+                        .map(|actor_state| {
+                            primitive_types::U256::from_dec_str(&format!(
+                                "{}",
+                                &actor_state.balance.atto()
+                            ))
+                            .unwrap()
+                        })
+                        .unwrap()
+                );
 
                 info!("New State ID Updated");
 
@@ -472,10 +492,7 @@ impl<'a, T: Tester> Executor<'a, T> {
     }
 }
 
-pub fn execute_test_suit<RUN: Runner + Clone>(runner: RUN, path: &Path) -> Result<(), Error> {
-    let json_reader = std::fs::read(path).unwrap();
-    let suit: TestSuit = serde_json::from_reader(&*json_reader)?;
-
+fn init_tester(env: &Env) -> (TesterCore<MemoryBlockstore, DummyExterns>, Vec<Account>) {
     let store = MemoryBlockstore::default();
     let bundle_root = bundle::import_bundle(&store, actors_v10::BUNDLE_CAR).unwrap();
 
@@ -503,15 +520,28 @@ pub fn execute_test_suit<RUN: Runner + Clone>(runner: RUN, path: &Path) -> Resul
         .set_actor_from_bin(&wasm_bin, state_cid, actor_address, TokenAmount::zero())
         .unwrap();
 
+    let base_fee = TokenAmount::from_atto(
+        BigInt::from_str(&format!("{}", &env.current_base_fee.unwrap_or_default())).unwrap(),
+    );
+
     // Instantiate machine
-    tester.instantiate_machine(DummyExterns).unwrap();
+    tester.instantiate_machine(DummyExterns, base_fee).unwrap();
+
+    (tester, sender.to_vec())
+}
+
+pub fn execute_test_suit<RUN: Runner + Clone>(runner: RUN, path: &Path) -> Result<(), Error> {
+    let json_reader = std::fs::read(path).unwrap();
+    let suit: TestSuit = serde_json::from_reader(&*json_reader)?;
 
     let timer = Instant::now();
 
-    let mut executor = Executor::new(path, &mut tester, &sender);
-
     for (name, unit) in suit.0.iter() {
         // info!("{:#?}:{:#?}", name, unit);
+
+        let (tester, sender) = init_tester(&unit.env);
+
+        let mut executor = Executor::new(path, tester, &sender);
 
         if !executor.process_pre_block(name, unit) {
             continue;

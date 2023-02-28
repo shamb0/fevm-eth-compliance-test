@@ -35,8 +35,6 @@ use super::builtin::{fetch_builtin_code_cid, set_eam_actor, set_init_actor, set_
 use super::error::Error;
 use super::{merkle_trie, B256, H256, U256};
 
-const DEFAULT_BASE_FEE: u64 = 100;
-
 lazy_static! {
     pub static ref INITIAL_ACCOUNT_BALANCE: TokenAmount = TokenAmount::from_atto(10000 * 10000);
 }
@@ -48,7 +46,7 @@ pub type IntegrationExecutor<B, E> =
 
 pub type Account = (ActorID, Address);
 
-pub trait Tester: 'static {
+pub trait Tester {
     fn create_account(
         &mut self,
         secret_key: SecretKey,
@@ -62,6 +60,7 @@ pub trait Tester: 'static {
     ) -> anyhow::Result<ApplyRet>;
     fn code_by_id(&self, id: u32) -> Option<Cid>;
     fn get_actor(&mut self, id: ActorID) -> Result<Option<ActorState>>;
+    fn get_actor_id(&mut self, actor_address: &Address) -> Option<ActorID>;
     fn set_actor(&mut self, actor_address: &Address, state: ActorState) -> Result<ActorID>;
     fn init_fevm(
         &mut self,
@@ -73,7 +72,11 @@ pub trait Tester: 'static {
     fn get_fevm_trie_account_rlp(&mut self, id: ActorID, kamt_config: KamtConfig) -> Result<Bytes>;
 }
 
-pub struct TesterCore<B: Blockstore + 'static, E: Externs + 'static> {
+pub struct TesterCore<B, E>
+where
+    B: Blockstore + 'static,
+    E: Externs + 'static,
+{
     // Network version used in the test
     nv: NetworkVersion,
     // Builtin actors root Cid used in the Machine
@@ -90,8 +93,8 @@ pub struct TesterCore<B: Blockstore + 'static, E: Externs + 'static> {
 
 impl<B, E> TesterCore<B, E>
 where
-    B: Blockstore,
-    E: Externs,
+    B: Blockstore + 'static,
+    E: Externs + 'static,
 {
     pub fn new(
         nv: NetworkVersion,
@@ -205,8 +208,8 @@ where
     }
 
     /// Sets the Machine and the Executor in our Tester structure.
-    pub fn instantiate_machine(&mut self, externs: E) -> Result<()> {
-        self.instantiate_machine_with_config(externs, |_| (), |_| ())
+    pub fn instantiate_machine(&mut self, externs: E, base_fee: TokenAmount) -> Result<()> {
+        self.instantiate_machine_with_config(base_fee, externs, |_| (), |_| ())
     }
 
     /// Sets the Machine and the Executor in our Tester structure.
@@ -216,6 +219,7 @@ where
     /// the rest of the components.
     pub fn instantiate_machine_with_config<F, G>(
         &mut self,
+        base_fee: TokenAmount,
         externs: E,
         configure_nc: F,
         configure_mc: G,
@@ -244,8 +248,7 @@ where
         configure_nc(&mut nc);
 
         let mut mc = nc.for_epoch(0, 0, state_root);
-        mc.set_base_fee(TokenAmount::from_atto(DEFAULT_BASE_FEE))
-            .enable_tracing();
+        mc.set_base_fee(base_fee).enable_tracing();
 
         // Custom configuration.
         configure_mc(&mut mc);
@@ -330,7 +333,11 @@ where
     }
 }
 
-impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> {
+impl<B, E> Tester for TesterCore<B, E>
+where
+    B: Blockstore + 'static,
+    E: Externs + 'static,
+{
     fn create_account(
         &mut self,
         secret_key: SecretKey,
@@ -367,6 +374,13 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
             .state_tree()
             .get_actor(id)
             .map_err(anyhow::Error::from)
+    }
+
+    fn get_actor_id(&mut self, actor_address: &Address) -> Option<ActorID> {
+        let state_tree = self.executor.as_mut().unwrap().state_tree_mut();
+        state_tree
+            .lookup_id(actor_address)
+            .expect("failed to lookup actor")
     }
 
     fn set_actor(&mut self, actor_address: &Address, state: ActorState) -> Result<ActorID> {
@@ -453,7 +467,7 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
         let mut stream = RlpStream::new_list(4);
 
         stream.append(&evm_state.nonce);
-        info!("nonce :: {:#?}", &evm_state.nonce);
+        info!("nonce :: {:#?}", &actor_state.sequence);
 
         let balance = format!("{}", &actor_state.balance.atto());
         let balance = primitive_types::U256::from_dec_str(&balance).unwrap();

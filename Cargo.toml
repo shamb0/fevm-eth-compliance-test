@@ -51,14 +51,23 @@ fvm_integration_tests = { version = "3.0.0-alpha.3" }
 actors-v10 = { package = "fil_builtin_actors_bundle", git = "https://github.com/shamb0/builtin-actors", branch = "shamb0/mirror-next" }
 fil_actor_evm = { package = "fil_actor_evm", git = "https://github.com/shamb0/builtin-actors", branch = "shamb0/mirror-next" }
 fil_actors_evm_shared = { package = "fil_actors_evm_shared", git = "https://github.com/shamb0/builtin-actors", branch = "shamb0/mirror-next" }
-fil_actor_eam = { package = "fil_actor_eam", git = "https://github.com/shamb0/builtin-actors", branch = "shamb0/mirror-next" }
 fil_actors_runtime = { package = "fil_actors_runtime", git = "https://github.com/shamb0/builtin-actors", branch = "shamb0/mirror-next", features = ["test_utils"] }
 
+[dev-dependencies]
+fil_actor_eam = { package = "fil_actor_eam", git = "https://github.com/shamb0/builtin-actors", branch = "shamb0/mirror-next" }
 
 [dependencies.wasmtime]
 version = "2.0.2"
 default-features = false
 features = ["cranelift", "parallel-compilation"]
+
+[patch.crates-io]
+fvm = { path = "../fork02-ref-fvm/ref-fvm/fvm" }
+fvm_ipld_kamt = { path = "../fork02-ref-fvm/ref-fvm/ipld/kamt" }
+fvm_ipld_blockstore = { path = "../fork02-ref-fvm/ref-fvm/ipld/blockstore" }
+fvm_ipld_encoding = { path = "../fork02-ref-fvm/ref-fvm/ipld/encoding" }
+fvm_integration_tests = { path = "../fork02-ref-fvm/ref-fvm/testing/integration" }
+fvm_shared = { path = "../fork02-ref-fvm/ref-fvm/shared" }
 
 #[patch.crates-io]
 #fvm_shared = { git = "https://github.com/filecoin-project/ref-fvm", branch = "master" }
