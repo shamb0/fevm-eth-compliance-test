@@ -472,7 +472,7 @@ where
                 info!(
                     "Balance :: {:#?}",
                     self.tester
-                        .get_actor(actor_id.clone())
+                        .get_actor(actor_id)
                         .unwrap()
                         .map(|actor_state| {
                             primitive_types::U256::from_dec_str(&format!(
