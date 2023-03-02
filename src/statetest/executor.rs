@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use fil_actors_runtime::runtime::builtins::Type as ActorType;
+use fil_actors_runtime::runtime::EMPTY_ARR_CID;
 use fvm::executor::ApplyKind;
 use fvm::gas::Gas;
 use fvm::state_tree::ActorState;
@@ -441,21 +442,31 @@ where
 						address
 					);
                 }
+                // Create an account if the bytecode is empty, otherwise create an EVM actor.
+                let (code_cid, state_cid) = if info.code.is_empty() {
+                    let ethaccount_code_cid = self
+                        .tester
+                        .code_by_id(ActorType::EthAccount as u32)
+                        .unwrap();
+                    (ethaccount_code_cid, EMPTY_ARR_CID)
+                } else {
+                    let evm_code_cid = self.tester.code_by_id(ActorType::EVM as u32).unwrap();
+                    let evm_state_cid = self
+                        .tester
+                        .init_fevm(
+                            info.code.clone(),
+                            info.nonce,
+                            &info.storage,
+                            KAMT_CONFIG.clone(),
+                        )
+                        .expect("failed to store state");
 
-                let evm_code_cid = self.tester.code_by_id(ActorType::EVM as u32).unwrap();
-                let evm_state_cid = self
-                    .tester
-                    .init_fevm(
-                        info.code.clone(),
-                        info.nonce,
-                        &info.storage,
-                        KAMT_CONFIG.clone(),
-                    )
-                    .expect("failed to store state");
+                    (evm_code_cid, evm_state_cid)
+                };
 
                 let actor_state = ActorState::new(
-                    evm_code_cid,
-                    evm_state_cid,
+                    code_cid,
+                    state_cid,
                     TokenAmount::from_atto(
                         BigInt::from_str(&format!("{}", &info.balance)).unwrap(),
                     ),
