@@ -1,11 +1,14 @@
 // Copyright 2021-2023 Protocol Labs
 // SPDX-License-Identifier: Apache-2.0, MIT
+use std::collections::HashMap;
+
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use cid::multihash::{Code, MultihashDigest};
 use cid::Cid;
 use fil_actor_evm::interpreter::system::StateKamt;
 use fil_actor_evm::{BytecodeHash, State as EvmState};
+use fil_actors_evm_shared::uints::U256 as evm_U256;
 use fvm::call_manager::DefaultCallManager;
 use fvm::engine::EnginePool;
 use fvm::executor::{ApplyKind, ApplyRet, DefaultExecutor, Executor as FVMExecutor};
@@ -25,13 +28,12 @@ use fvm_shared::version::NetworkVersion;
 use fvm_shared::{ActorID, IPLD_RAW};
 use lazy_static::lazy_static;
 use libsecp256k1::{PublicKey, SecretKey};
+use rlp::RlpStream;
+use tracing::info;
 
-use crate::common::builtin::{
-    fetch_builtin_code_cid, set_eam_actor, set_init_actor, set_sys_actor,
-};
-use crate::common::error::Error;
-
-const DEFAULT_BASE_FEE: u64 = 100;
+use super::builtin::{fetch_builtin_code_cid, set_eam_actor, set_init_actor, set_sys_actor};
+use super::error::Error;
+use super::{merkle_trie, B256, H256, U256};
 
 lazy_static! {
     pub static ref INITIAL_ACCOUNT_BALANCE: TokenAmount = TokenAmount::from_atto(10000 * 10000);
@@ -44,7 +46,7 @@ pub type IntegrationExecutor<B, E> =
 
 pub type Account = (ActorID, Address);
 
-pub trait Tester: 'static {
+pub trait Tester {
     fn create_account(
         &mut self,
         secret_key: SecretKey,
@@ -58,11 +60,23 @@ pub trait Tester: 'static {
     ) -> anyhow::Result<ApplyRet>;
     fn code_by_id(&self, id: u32) -> Option<Cid>;
     fn get_actor(&mut self, id: ActorID) -> Result<Option<ActorState>>;
+    fn get_actor_id(&mut self, actor_address: &Address) -> Option<ActorID>;
     fn set_actor(&mut self, actor_address: &Address, state: ActorState) -> Result<ActorID>;
-    fn init_fevm(&mut self, code: Bytes, nonce: u64, kamt_config: KamtConfig) -> Result<Cid>;
+    fn init_fevm(
+        &mut self,
+        code: Bytes,
+        nonce: u64,
+        storage: &HashMap<U256, U256>,
+        kamt_config: KamtConfig,
+    ) -> Result<Cid>;
+    fn get_fevm_trie_account_rlp(&mut self, id: ActorID, kamt_config: KamtConfig) -> Result<Bytes>;
 }
 
-pub struct TesterCore<B: Blockstore + 'static, E: Externs + 'static> {
+pub struct TesterCore<B, E>
+where
+    B: Blockstore + 'static,
+    E: Externs + 'static,
+{
     // Network version used in the test
     nv: NetworkVersion,
     // Builtin actors root Cid used in the Machine
@@ -79,8 +93,8 @@ pub struct TesterCore<B: Blockstore + 'static, E: Externs + 'static> {
 
 impl<B, E> TesterCore<B, E>
 where
-    B: Blockstore,
-    E: Externs,
+    B: Blockstore + 'static,
+    E: Externs + 'static,
 {
     pub fn new(
         nv: NetworkVersion,
@@ -188,15 +202,14 @@ where
         self.state_tree
             .as_mut()
             .unwrap()
-            .set_actor(actor_id, actor_state)
-            .map_err(anyhow::Error::from)?;
+            .set_actor(actor_id, actor_state);
 
         Ok(code_cid)
     }
 
     /// Sets the Machine and the Executor in our Tester structure.
-    pub fn instantiate_machine(&mut self, externs: E) -> Result<()> {
-        self.instantiate_machine_with_config(externs, |_| (), |_| ())
+    pub fn instantiate_machine(&mut self, externs: E, base_fee: TokenAmount) -> Result<()> {
+        self.instantiate_machine_with_config(base_fee, externs, |_| (), |_| ())
     }
 
     /// Sets the Machine and the Executor in our Tester structure.
@@ -206,6 +219,7 @@ where
     /// the rest of the components.
     pub fn instantiate_machine_with_config<F, G>(
         &mut self,
+        base_fee: TokenAmount,
         externs: E,
         configure_nc: F,
         configure_mc: G,
@@ -234,8 +248,7 @@ where
         configure_nc(&mut nc);
 
         let mut mc = nc.for_epoch(0, 0, state_root);
-        mc.set_base_fee(TokenAmount::from_atto(DEFAULT_BASE_FEE))
-            .enable_tracing();
+        mc.set_base_fee(base_fee).enable_tracing();
 
         // Custom configuration.
         configure_mc(&mut mc);
@@ -283,9 +296,8 @@ where
             delegated_address: None,
         };
 
-        state_tree
-            .set_actor(assigned_addr, actor_state)
-            .map_err(anyhow::Error::from)?;
+        state_tree.set_actor(assigned_addr, actor_state);
+
         Ok((assigned_addr, pub_key_addr))
     }
 
@@ -315,15 +327,17 @@ where
             delegated_address: None,
         };
 
-        state_tree
-            .set_actor(assigned_addr, actor_state)
-            .map_err(anyhow::Error::from)?;
+        state_tree.set_actor(assigned_addr, actor_state);
 
         Ok((assigned_addr, pub_key_addr))
     }
 }
 
-impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> {
+impl<B, E> Tester for TesterCore<B, E>
+where
+    B: Blockstore + 'static,
+    E: Externs + 'static,
+{
     fn create_account(
         &mut self,
         secret_key: SecretKey,
@@ -362,6 +376,13 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
             .map_err(anyhow::Error::from)
     }
 
+    fn get_actor_id(&mut self, actor_address: &Address) -> Option<ActorID> {
+        let state_tree = self.executor.as_mut().unwrap().state_tree_mut();
+        state_tree
+            .lookup_id(actor_address)
+            .expect("failed to lookup actor")
+    }
+
     fn set_actor(&mut self, actor_address: &Address, state: ActorState) -> Result<ActorID> {
         let state_tree = self.executor.as_mut().unwrap().state_tree_mut();
 
@@ -381,15 +402,18 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
         Ok(actor_id)
     }
 
-    fn init_fevm(&mut self, code: Bytes, nonce: u64, kamt_config: KamtConfig) -> Result<Cid> {
+    fn init_fevm(
+        &mut self,
+        code: Bytes,
+        nonce: u64,
+        storage: &HashMap<U256, U256>,
+        kamt_config: KamtConfig,
+    ) -> Result<Cid> {
         let state_tree = self.executor.as_mut().unwrap().state_tree_mut();
 
         let hasher = Code::try_from(SupportedHashes::Keccak256 as u64).unwrap();
-        let code_hash = multihash::Multihash::wrap(
-            SupportedHashes::Keccak256 as u64,
-            &hasher.digest(&code).to_bytes(),
-        )
-        .expect("failed to hash bytecode with keccak");
+        let mhash = hasher.digest(&code);
+        let digest = mhash.digest();
 
         let code_cid = state_tree
             .store()
@@ -398,15 +422,85 @@ impl<B: Blockstore + 'static, E: Externs + 'static> Tester for TesterCore<B, E> 
 
         let mut slots = StateKamt::new_with_config(state_tree.store(), kamt_config);
 
+        if !storage.is_empty() {
+            storage.iter().for_each(|(k, v)| {
+                if *v != U256::ZERO {
+                    let _ = slots
+                        .set(
+                            evm_U256::from_dec_str(&format!("{}", *k)).unwrap(),
+                            evm_U256::from_dec_str(&format!("{}", *v)).unwrap(),
+                        )
+                        .unwrap();
+                }
+            });
+        }
+
         let evm_state = EvmState {
             bytecode: code_cid,
-            bytecode_hash: BytecodeHash::try_from(&code_hash.to_bytes()[..32]).unwrap(),
+            bytecode_hash: BytecodeHash::try_from(digest).unwrap(),
             contract_state: slots.flush().expect("failed to flush contract state"),
             nonce,
             tombstone: None,
         };
 
         state_tree.store().put_cbor(&evm_state, Code::Blake2b256)
+    }
+
+    fn get_fevm_trie_account_rlp(&mut self, id: ActorID, kamt_config: KamtConfig) -> Result<Bytes> {
+        let state_tree = self.executor.as_mut().unwrap().state_tree_mut();
+
+        let actor_state = state_tree
+            .get_actor(id)
+            .unwrap()
+            .expect("failed to get actor state");
+
+        let evm_state: EvmState = state_tree
+            .store()
+            .get_cbor(&actor_state.state)
+            .unwrap()
+            .unwrap();
+
+        let slots =
+            StateKamt::load_with_config(&evm_state.contract_state, state_tree.store(), kamt_config)
+                .expect("state not in blockstore");
+
+        let mut stream = RlpStream::new_list(4);
+
+        stream.append(&evm_state.nonce);
+        info!("nonce :: {:#?}", &actor_state.sequence);
+
+        let balance = format!("{}", &actor_state.balance.atto());
+        let balance = primitive_types::U256::from_dec_str(&balance).unwrap();
+        stream.append(&balance);
+        info!("balance :: {:#?}", &balance);
+
+        let mut slots_entry = vec![];
+
+        slots
+            .for_each(|&k, v| {
+                let val = primitive_types::U256::from_dec_str(&format!("{}", &v)).unwrap();
+
+                if !val.is_zero() {
+                    slots_entry.push((H256::from_slice(&k.to_bytes()), rlp::encode(&val)));
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        stream.append(&{
+            merkle_trie::sec_trie_root::<merkle_trie::KeccakHasher, _, _, _>(slots_entry.clone())
+        });
+        info!("slots :: {:#?}", &slots_entry);
+
+        let bytecode_hash = B256::from_slice(evm_state.bytecode_hash.as_slice());
+
+        stream.append(&bytecode_hash.0.as_ref());
+        info!(
+            "bytecode_hash.0 :: {}",
+            hex::encode(bytecode_hash.0.as_ref())
+        );
+
+        Ok(stream.out().freeze())
     }
 }
 

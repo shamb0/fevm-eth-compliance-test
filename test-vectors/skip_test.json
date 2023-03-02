@@ -175,28 +175,6 @@
                     }
                 }
             }
-        },
-        {
-            "issueId": "ID-0096 | stQuadraticComplexityTest/QuadraticComplexitySolidity_CallDataCopy.json",
-            "failing": "Very long execution time in loop",
-            "postTests": {
-                "QuadraticComplexitySolidity_CallDataCopy": {
-                    "skipIds": {
-                        "Istanbul" : [
-                            "*"
-                        ],
-                        "Berlin" : [
-                            "*"
-                        ],
-                        "London" : [
-                            "*"
-                        ],
-                        "Merge" : [
-                            "*"
-                        ]
-                    }
-                }
-            }
         }
     ]
 }

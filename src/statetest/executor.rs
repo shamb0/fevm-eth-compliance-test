@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::Path;
 use std::str::FromStr;
-use std::time::{Instant};
+use std::time::Instant;
 
-use arrayref::array_ref;
 use fil_actors_runtime::runtime::builtins::Type as ActorType;
+use fil_actors_runtime::runtime::EMPTY_ARR_CID;
 use fvm::executor::ApplyKind;
 use fvm::gas::Gas;
 use fvm::state_tree::ActorState;
@@ -23,15 +23,14 @@ use fvm_shared::state::StateTreeVersion;
 use fvm_shared::version::NetworkVersion;
 use fvm_shared::ActorID;
 use hex_literal::hex;
-use libsecp256k1::SecretKey;
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use super::models::{SpecName, Test, TestSuit, TestUnit};
+use super::models::{Env, SpecName, Test, TestSuit, TestUnit};
 use super::{ExecStatus, Runner};
-use crate::common::tester::{Account, Tester, TesterCore, INITIAL_ACCOUNT_BALANCE};
-use crate::common::{Error, B160, B256, SKIP_TESTS};
+use crate::common::tester::{Account, Tester, TesterCore};
+use crate::common::{merkle_trie, Error, B160, B256, H160, SKIP_TESTS};
 
 const ENOUGH_GAS: Gas = Gas::new(99_900_000_000_000);
 
@@ -126,15 +125,20 @@ lazy_static::lazy_static! {
     };
 }
 
-struct Executor<'a, T: Tester> {
+const EAM_ACTOR_ID: ActorID = 10;
+
+struct Executor<TC> {
     trace_prefix: String,
     pre_contract_cache: HashMap<B160, ActorID>,
-    tester: &'a mut T,
+    tester: TC,
     sender: Vec<Account>,
 }
 
-impl<'a, T: Tester> Executor<'a, T> {
-    fn new(path: &Path, tester: &'a mut T, arg_sender: &[Account]) -> Self {
+impl<TC> Executor<TC>
+where
+    TC: Tester,
+{
+    fn new(path: &Path, tester: TC, arg_sender: &[Account]) -> Self {
         let pre_contract_cache: HashMap<B160, ActorID> = HashMap::new();
 
         let sender = arg_sender.to_vec();
@@ -153,20 +157,16 @@ impl<'a, T: Tester> Executor<'a, T> {
         name: &str,
         unit: &TestUnit,
     ) -> bool {
-        let sender_account = unit.transaction.secret_key.map(|trans_sender_key| {
-            let priv_key =
-                SecretKey::parse(array_ref!(trans_sender_key.as_bytes(), 0, 32)).unwrap();
-
-            self.tester
-                .create_account(priv_key, INITIAL_ACCOUNT_BALANCE.clone())
-                .unwrap()
-        });
-
-        if sender_account.is_none() {
-            warn!("Skipping TestCase invalid sender {:#?}", name,);
-            warn!("Path : {:#?}", self.trace_prefix);
-            return false;
-        }
+        let sender =
+            if let Some(caller) = MAP_CALLER_KEYS.get(&unit.transaction.secret_key.unwrap()) {
+                *caller
+            } else {
+                warn!(
+                    "Test Skipped, Unknow caller private key {:#?}",
+                    unit.transaction.secret_key.unwrap()
+                );
+                return false;
+            };
 
         // Process the "Post" & "transaction" block
         unit.post.iter().for_each(|(spec_name, tests)| {
@@ -188,7 +188,7 @@ impl<'a, T: Tester> Executor<'a, T> {
 
                 let _execu_status = self.process_post_block_internal(
                     runner.clone(),
-                    sender_account,
+                    sender,
                     name,
                     spec_name,
                     unit,
@@ -236,14 +236,14 @@ impl<'a, T: Tester> Executor<'a, T> {
     fn process_post_block_internal<RUN: Runner + Clone>(
         &mut self,
         runner: RUN,
-        sender_account: Option<Account>,
+        sender: B160,
         name: &str,
         spec_name: &SpecName,
         unit: &TestUnit,
         test: &Test,
     ) -> bool {
         let gas_limit = *unit.transaction.gas_limit.get(test.indexes.gas).unwrap();
-        let tx_gas_limit = i64::try_from(gas_limit).unwrap_or(i64::MAX);
+        let tx_gas_limit = u64::try_from(gas_limit).unwrap_or(u64::MAX);
         let tx_data = unit.transaction.data.get(test.indexes.data).unwrap();
         let _tx_value = *unit.transaction.value.get(test.indexes.value).unwrap();
 
@@ -261,6 +261,15 @@ impl<'a, T: Tester> Executor<'a, T> {
             );
             warn!("Path : {:#?}", self.trace_prefix);
             warn!("TX len : {:#?}", tx_data.len());
+
+            let path_tag: String = format!("{}::{}", self.trace_prefix, name);
+            let status_msg: String = format!(
+                "{:?} | {:?} | transaction.to empty",
+                spec_name, test.indexes.data
+            );
+
+            runner.update_exe_status(ExecStatus::Skip, path_tag, status_msg);
+
             return false;
         }
 
@@ -278,23 +287,29 @@ impl<'a, T: Tester> Executor<'a, T> {
             .get(&unit.transaction.to.unwrap())
             .unwrap();
 
-        let actor_address = Address::new_id(*actor_id);
+        let to_actor_address = Address::new_id(*actor_id);
 
-        let sender_state = self
-            .tester
-            .get_actor(sender_account.unwrap().0)
-            .unwrap()
-            .unwrap();
+        let sender_actor_id = *self.pre_contract_cache.get(&sender).unwrap();
 
-		// Gas::new(tx_gas_limit).as_milligas(),
-		// Gas::from_milligas(tx_gas_limit).as_milligas()
+        // let sender_address = Address::new_delegated(EAM_ACTOR_ID, &sender.as_bytes()).unwrap();
+
+        let sender_address = Address::new_id(sender_actor_id);
+
+        let sender_state = self.tester.get_actor(sender_actor_id).unwrap().unwrap();
+
+        info!("Sender :: {:#?} {:#?}", &sender, &sender_address);
+
+        // Gas::new(tx_gas_limit).as_milligas(),
+        // Gas::from_milligas(tx_gas_limit).as_milligas()
+        // (tx_gas_limit.saturating_mul(20i64))
+        // ENOUGH_GAS.as_milligas()
 
         // Send message
         let message = Message {
-            from: sender_account.unwrap().1,
-            to: actor_address,
+            from: sender_address,
+            to: to_actor_address,
             sequence: sender_state.sequence,
-            gas_limit: tx_gas_limit,
+            gas_limit: tx_gas_limit.saturating_mul(20u64),
             method_num: fil_actor_evm::Method::InvokeContract as u64,
             params: raw_params,
             ..Message::default()
@@ -305,7 +320,12 @@ impl<'a, T: Tester> Executor<'a, T> {
             .execute_message(message, ApplyKind::Explicit, 100)
             .unwrap();
 
-        info!("UC : {:#?}", name);
+        info!("Post Hash Check ::");
+
+        let state_trie_hash = self.state_merkle_trie_root();
+
+        info!("Calc :: {:#?}", state_trie_hash);
+        info!("Actual :: {:#?}", test.hash);
 
         let path_tag: String = format!("{}::{}", self.trace_prefix, name);
         let status_msg: String = format!(
@@ -336,6 +356,28 @@ impl<'a, T: Tester> Executor<'a, T> {
         true
     }
 
+    fn state_merkle_trie_root(&mut self) -> B256 {
+        let vec = self
+            .pre_contract_cache
+            .iter()
+            .map(|(address, actor_id)| {
+                info!(
+                    "State info for => {:#?}",
+                    hex::encode(address.to_fixed_bytes())
+                );
+
+                let acc_root = self
+                    .tester
+                    .get_fevm_trie_account_rlp(*actor_id, KAMT_CONFIG.clone())
+                    .unwrap();
+
+                (H160::from_slice(&address.to_fixed_bytes()), acc_root)
+            })
+            .collect();
+
+        merkle_trie::trie_root(vec)
+    }
+
     fn skip_pre_test(test_name: &str, owner_address: &B160) -> bool {
         let rval = SKIP_TESTS.state.iter().any(|state_test| {
             state_test.pre_tests.as_ref().map_or_else(
@@ -363,7 +405,6 @@ impl<'a, T: Tester> Executor<'a, T> {
     }
 
     pub fn process_pre_block(&mut self, name: &str, unit: &TestUnit) -> bool {
-        const EAM_ACTOR_ID: ActorID = 10;
         // Process the "pre" block & deploy the contracts
         unit.pre
             .iter()
@@ -401,27 +442,58 @@ impl<'a, T: Tester> Executor<'a, T> {
 						address
 					);
                 }
+                // Create an account if the bytecode is empty, otherwise create an EVM actor.
+                let (code_cid, state_cid) = if info.code.is_empty() {
+                    let ethaccount_code_cid = self
+                        .tester
+                        .code_by_id(ActorType::EthAccount as u32)
+                        .unwrap();
+                    (ethaccount_code_cid, EMPTY_ARR_CID)
+                } else {
+                    let evm_code_cid = self.tester.code_by_id(ActorType::EVM as u32).unwrap();
+                    let evm_state_cid = self
+                        .tester
+                        .init_fevm(
+                            info.code.clone(),
+                            info.nonce,
+                            &info.storage,
+                            KAMT_CONFIG.clone(),
+                        )
+                        .expect("failed to store state");
 
-                let evm_code_cid = self.tester.code_by_id(ActorType::EVM as u32).unwrap();
-                let evm_state_cid = self
-                    .tester
-                    .init_fevm(info.code.clone(), info.nonce, KAMT_CONFIG.clone())
-                    .expect("failed to store state");
+                    (evm_code_cid, evm_state_cid)
+                };
 
                 let actor_state = ActorState::new(
-                    evm_code_cid,
-                    evm_state_cid,
+                    code_cid,
+                    state_cid,
                     TokenAmount::from_atto(
                         BigInt::from_str(&format!("{}", &info.balance)).unwrap(),
                     ),
                     info.nonce,
-                    None,
+                    Some(addr),
                 );
 
                 let actor_id = self
                     .tester
                     .set_actor(&addr, actor_state)
                     .expect("EVM actor state mutation failed");
+
+                info!("Pre Acc {:#?}", *address);
+                info!(
+                    "Balance :: {:#?}",
+                    self.tester
+                        .get_actor(actor_id)
+                        .unwrap()
+                        .map(|actor_state| {
+                            primitive_types::U256::from_dec_str(&format!(
+                                "{}",
+                                &actor_state.balance.atto()
+                            ))
+                            .unwrap()
+                        })
+                        .unwrap()
+                );
 
                 info!("New State ID Updated");
 
@@ -431,10 +503,7 @@ impl<'a, T: Tester> Executor<'a, T> {
     }
 }
 
-pub fn execute_test_suit<RUN: Runner + Clone>(runner: RUN, path: &Path) -> Result<(), Error> {
-    let json_reader = std::fs::read(path).unwrap();
-    let suit: TestSuit = serde_json::from_reader(&*json_reader)?;
-
+fn init_tester(env: &Env) -> (TesterCore<MemoryBlockstore, DummyExterns>, Vec<Account>) {
     let store = MemoryBlockstore::default();
     let bundle_root = bundle::import_bundle(&store, actors_v10::BUNDLE_CAR).unwrap();
 
@@ -462,15 +531,28 @@ pub fn execute_test_suit<RUN: Runner + Clone>(runner: RUN, path: &Path) -> Resul
         .set_actor_from_bin(&wasm_bin, state_cid, actor_address, TokenAmount::zero())
         .unwrap();
 
+    let base_fee = TokenAmount::from_atto(
+        BigInt::from_str(&format!("{}", &env.current_base_fee.unwrap_or_default())).unwrap(),
+    );
+
     // Instantiate machine
-    tester.instantiate_machine(DummyExterns).unwrap();
+    tester.instantiate_machine(DummyExterns, base_fee).unwrap();
+
+    (tester, sender.to_vec())
+}
+
+pub fn execute_test_suit<RUN: Runner + Clone>(runner: RUN, path: &Path) -> Result<(), Error> {
+    let json_reader = std::fs::read(path).unwrap();
+    let suit: TestSuit = serde_json::from_reader(&*json_reader)?;
 
     let timer = Instant::now();
 
-    let mut executor = Executor::new(path, &mut tester, &sender);
-
     for (name, unit) in suit.0.iter() {
         // info!("{:#?}:{:#?}", name, unit);
+
+        let (tester, sender) = init_tester(&unit.env);
+
+        let mut executor = Executor::new(path, tester, &sender);
 
         if !executor.process_pre_block(name, unit) {
             continue;
